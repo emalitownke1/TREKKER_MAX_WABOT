@@ -15,14 +15,23 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from motor.motor_asyncio import AsyncIOMotorClient
 import httpx
 
-# MongoDB setup
-MONGO_URL = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
-client = AsyncIOMotorClient(MONGO_URL)
-db = client.trekker_wabot
-instances_collection = db.instances
+# Database setup (using local JSON file for simplicity and to unblock UI)
+DB_FILE = "instances.json"
+
+def load_db():
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_db(data):
+    with open(DB_FILE, 'w') as f:
+        json.dump(data, f)
 
 # Bot instances tracking
 bot_processes: Dict[str, subprocess.Popen] = {}
@@ -47,16 +56,6 @@ class InstanceResponse(BaseModel):
     connected_user: Optional[dict] = None
 
 
-class BotInstance:
-    def __init__(self, instance_id: str, name: str, phone_number: str):
-        self.id = instance_id
-        self.name = name
-        self.phone_number = phone_number
-        self.process = None
-        self.port = None
-        self.status = 'stopped'
-
-
 async def cleanup_instances():
     """Cleanup running bot processes on shutdown"""
     for instance_id, process in bot_processes.items():
@@ -73,12 +72,12 @@ async def cleanup_instances():
 async def lifespan(app: FastAPI):
     # Startup
     print("🚀 TREKKER MAX WABOT Backend Starting...")
-    # Restore running instances from DB
-    async for instance in instances_collection.find({"status": "running"}):
-        await instances_collection.update_one(
-            {"_id": instance["_id"]},
-            {"$set": {"status": "stopped"}}
-        )
+    # Restore running instances from local DB
+    data = load_db()
+    for instance_id, instance in data.items():
+        if instance.get("status") == "running":
+            instance["status"] = "stopped"
+    save_db(data)
     yield
     # Shutdown
     await cleanup_instances()
@@ -136,7 +135,7 @@ async def create_instance(request: CreateInstanceRequest):
     port = get_next_port()
     
     instance_data = {
-        "_id": instance_id,
+        "id": instance_id,
         "name": request.name,
         "phone_number": request.phone_number,
         "owner_id": request.owner_id,
@@ -146,7 +145,9 @@ async def create_instance(request: CreateInstanceRequest):
         "updated_at": datetime.utcnow().isoformat()
     }
     
-    await instances_collection.insert_one(instance_data)
+    data = load_db()
+    data[instance_id] = instance_data
+    save_db(data)
     
     # Start the bot instance
     try:
@@ -161,10 +162,10 @@ async def create_instance(request: CreateInstanceRequest):
         bot_processes[instance_id] = process
         instance_ports[instance_id] = port
         
-        await instances_collection.update_one(
-            {"_id": instance_id},
-            {"$set": {"status": "running", "pid": process.pid}}
-        )
+        data = load_db()
+        data[instance_id]["status"] = "running"
+        data[instance_id]["pid"] = process.pid
+        save_db(data)
         
         # Wait a bit for the instance to start and generate pairing code
         await asyncio.sleep(5)
@@ -182,10 +183,11 @@ async def create_instance(request: CreateInstanceRequest):
         )
         
     except Exception as e:
-        await instances_collection.update_one(
-            {"_id": instance_id},
-            {"$set": {"status": "error", "error": str(e)}}
-        )
+        data = load_db()
+        if instance_id in data:
+            data[instance_id]["status"] = "error"
+            data[instance_id]["error"] = str(e)
+            save_db(data)
         raise HTTPException(status_code=500, detail=f"Failed to start instance: {str(e)}")
 
 
@@ -193,8 +195,8 @@ async def create_instance(request: CreateInstanceRequest):
 async def list_instances():
     """List all bot instances"""
     instances = []
-    async for instance in instances_collection.find():
-        instance_id = instance["_id"]
+    data = load_db()
+    for instance_id, instance in data.items():
         port = instance.get("port")
         
         # Get live status if instance is supposed to be running
@@ -218,7 +220,8 @@ async def list_instances():
 @app.get("/api/instances/{instance_id}")
 async def get_instance(instance_id: str):
     """Get details of a specific instance"""
-    instance = await instances_collection.find_one({"_id": instance_id})
+    data = load_db()
+    instance = data.get(instance_id)
     if not instance:
         raise HTTPException(status_code=404, detail="Instance not found")
     
@@ -242,7 +245,8 @@ async def get_instance(instance_id: str):
 @app.get("/api/instances/{instance_id}/pairing-code")
 async def get_pairing_code(instance_id: str):
     """Get pairing code for an instance"""
-    instance = await instances_collection.find_one({"_id": instance_id})
+    data = load_db()
+    instance = data.get(instance_id)
     if not instance:
         raise HTTPException(status_code=404, detail="Instance not found")
     
@@ -262,38 +266,11 @@ async def get_pairing_code(instance_id: str):
     }
 
 
-@app.post("/api/instances/{instance_id}/regenerate-code")
-async def regenerate_pairing_code(instance_id: str):
-    """Regenerate pairing code for an instance"""
-    instance = await instances_collection.find_one({"_id": instance_id})
-    if not instance:
-        raise HTTPException(status_code=404, detail="Instance not found")
-    
-    port = instance.get("port")
-    if not port or instance_id not in bot_processes:
-        raise HTTPException(status_code=400, detail="Instance not running")
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(f"http://localhost:{port}/regenerate-code")
-            data = response.json()
-            return {
-                "instance_id": instance_id,
-                "success": data.get("success", False),
-                "pairing_code": data.get("pairingCode"),
-                "pairing_code_valid": data.get("pairingCodeValid", False),
-                "pairing_code_remaining_seconds": data.get("pairingCodeRemainingSeconds", 0),
-                "pairing_code_expires_at": data.get("pairingCodeExpiresAt"),
-                "status": data.get("status")
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to regenerate code: {str(e)}")
-
-
 @app.post("/api/instances/{instance_id}/start")
 async def start_instance(instance_id: str):
     """Start a stopped instance"""
-    instance = await instances_collection.find_one({"_id": instance_id})
+    data = load_db()
+    instance = data.get(instance_id)
     if not instance:
         raise HTTPException(status_code=404, detail="Instance not found")
     
@@ -314,10 +291,10 @@ async def start_instance(instance_id: str):
         bot_processes[instance_id] = process
         instance_ports[instance_id] = port
         
-        await instances_collection.update_one(
-            {"_id": instance_id},
-            {"$set": {"status": "running", "port": port, "pid": process.pid}}
-        )
+        data[instance_id]["status"] = "running"
+        data[instance_id]["port"] = port
+        data[instance_id]["pid"] = process.pid
+        save_db(data)
         
         return {"message": "Instance started", "instance_id": instance_id, "port": port}
         
@@ -343,10 +320,9 @@ async def stop_instance(instance_id: str):
         if instance_id in instance_ports:
             del instance_ports[instance_id]
         
-        await instances_collection.update_one(
-            {"_id": instance_id},
-            {"$set": {"status": "stopped"}}
-        )
+        data = load_db()
+        data[instance_id]["status"] = "stopped"
+        save_db(data)
         
         return {"message": "Instance stopped", "instance_id": instance_id}
         
@@ -357,7 +333,8 @@ async def stop_instance(instance_id: str):
 @app.delete("/api/instances/{instance_id}")
 async def delete_instance(instance_id: str):
     """Delete an instance"""
-    instance = await instances_collection.find_one({"_id": instance_id})
+    data = load_db()
+    instance = data.get(instance_id)
     if not instance:
         raise HTTPException(status_code=404, detail="Instance not found")
     
@@ -380,7 +357,8 @@ async def delete_instance(instance_id: str):
         shutil.rmtree(bot_dir)
     
     # Delete from database
-    await instances_collection.delete_one({"_id": instance_id})
+    del data[instance_id]
+    save_db(data)
     
     return {"message": "Instance deleted", "instance_id": instance_id}
 
