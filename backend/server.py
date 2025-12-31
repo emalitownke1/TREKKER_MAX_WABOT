@@ -109,28 +109,7 @@ app.add_middleware(
 if os.path.exists("static"):
     app.mount("/_static", StaticFiles(directory="static"), name="static")
 
-@app.get("/")
-async def serve_index():
-    return FileResponse("static/index.html")
-
-@app.get("/{full_path:path}")
-async def serve_frontend(full_path: str):
-    if full_path.startswith("api"):
-        raise HTTPException(status_code=404)
-    
-    # Try serving from the static root
-    file_path = os.path.join("static", full_path)
-    if os.path.isfile(file_path):
-        return FileResponse(file_path)
-    
-    # Map /static/... to static/static/...
-    if full_path.startswith("static/"):
-        relative_path = full_path[len("static/"):]
-        static_sub_path = os.path.join("static/static", relative_path)
-        if os.path.isfile(static_sub_path):
-            return FileResponse(static_sub_path)
-        
-    return FileResponse("static/index.html")
+# Move serve_frontend after all API routes
 
 
 def get_next_port():
@@ -413,6 +392,30 @@ async def regenerate_code(instance_id: str):
             return response.json()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to communicate with bot instance: {str(e)}")
+
+
+@app.get("/")
+async def serve_index():
+    return FileResponse("static/index.html")
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    if full_path.startswith("api/") or full_path == "api":
+        raise HTTPException(status_code=404)
+    
+    # Try serving from the static root
+    file_path = os.path.join("static", full_path)
+    if os.path.isfile(file_path):
+        return FileResponse(file_path)
+    
+    # Map /static/... to static/static/...
+    if full_path.startswith("static/"):
+        relative_path = full_path[len("static/"):]
+        static_sub_path = os.path.join("static/static", relative_path)
+        if os.path.isfile(static_sub_path):
+            return FileResponse(static_sub_path)
+        
+    return FileResponse("static/index.html")
 
 
 @app.post("/api/instances/{instance_id}/restart")
