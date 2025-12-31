@@ -395,6 +395,26 @@ async def delete_instance(instance_id: str):
     return {"message": "Instance deleted", "instance_id": instance_id}
 
 
+@app.post("/api/instances/{instance_id}/regenerate-code")
+async def regenerate_code(instance_id: str):
+    """Regenerate pairing code for an instance"""
+    data = load_db()
+    instance = data.get(instance_id)
+    if not instance:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    
+    port = instance.get("port")
+    if not port:
+        raise HTTPException(status_code=400, detail="Instance has no port assigned")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(f"http://localhost:{port}/regenerate-code")
+            return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to communicate with bot instance: {str(e)}")
+
+
 @app.post("/api/instances/{instance_id}/restart")
 async def restart_instance(instance_id: str):
     """Restart an instance"""
