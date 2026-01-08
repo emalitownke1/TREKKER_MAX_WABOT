@@ -17,6 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 
+# Admin credentials from secrets
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+
 # Database setup (using local JSON file for simplicity and to unblock UI)
 DB_FILE = "instances.json"
 
@@ -44,6 +48,11 @@ class CreateInstanceRequest(BaseModel):
     name: str
     phone_number: str
     owner_id: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
 class InstanceResponse(BaseModel):
@@ -137,6 +146,13 @@ async def health_check():
         "version": "1.0.0",
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.post("/api/login")
+async def login(request: LoginRequest):
+    if request.username == ADMIN_USERNAME and request.password == ADMIN_PASSWORD:
+        return {"success": True, "message": "Login successful"}
+    raise HTTPException(status_code=401, detail="Invalid username or password")
 
 
 @app.post("/api/instances", response_model=InstanceResponse)

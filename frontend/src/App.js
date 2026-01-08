@@ -491,8 +491,13 @@ function App() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedInstance, setSelectedInstance] = useState(null);
   const [error, setError] = useState('');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
 
   const fetchInstances = useCallback(async () => {
+    if (!isAuthenticated) return;
     try {
       const response = await fetch(`${BACKEND_URL}/api/instances`);
       const data = await response.json();
@@ -507,10 +512,34 @@ function App() {
   }, []);
 
   useEffect(() => {
-    fetchInstances();
-    const interval = setInterval(fetchInstances, 5000);
-    return () => clearInterval(interval);
-  }, [fetchInstances]);
+    if (isAuthenticated) {
+      fetchInstances();
+      const interval = setInterval(fetchInstances, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchInstances, isAuthenticated]);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginLoading(true);
+    setError('');
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (response.ok) {
+        setIsAuthenticated(true);
+      } else {
+        setError('Invalid credentials');
+      }
+    } catch (err) {
+      setError('Login failed');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
 
   const createInstance = async (data) => {
     const response = await fetch(`${BACKEND_URL}/api/instances`, {
@@ -543,6 +572,49 @@ function App() {
     await fetchInstances();
   };
 
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
+        <div className="bg-gray-800 p-8 rounded-2xl shadow-2xl border border-gray-700 w-full max-w-md">
+          <div className="text-center mb-8">
+            <TrekkerLogo />
+            <h2 className="text-xl font-bold text-white mt-6">Admin Login</h2>
+          </div>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Username</label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl text-white focus:ring-2 focus:ring-emerald-500 outline-none"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl text-white focus:ring-2 focus:ring-emerald-500 outline-none"
+                required
+              />
+            </div>
+            {error && <p className="text-red-500 text-sm">{error}</p>}
+            <button
+              type="submit"
+              disabled={loginLoading}
+              className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold transition disabled:opacity-50"
+            >
+              {loginLoading ? 'Logging in...' : 'Login'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
       {/* Header */}
@@ -551,9 +623,12 @@ function App() {
           <div className="flex items-center justify-between">
             <TrekkerLogo />
             <div className="flex items-center gap-4">
-              <span className="text-sm text-gray-400">
-                {instances.length} Bot{instances.length !== 1 ? 's' : ''}
-              </span>
+              <button
+                onClick={() => setIsAuthenticated(false)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition text-sm font-medium"
+              >
+                Logout
+              </button>
               <button
                 onClick={() => setShowCreateModal(true)}
                 className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl hover:from-emerald-600 hover:to-teal-600 transition font-medium flex items-center gap-2 shadow-lg shadow-emerald-500/25"
