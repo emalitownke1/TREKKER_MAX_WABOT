@@ -141,26 +141,57 @@ async def health_check():
 
 @app.post("/api/instances", response_model=InstanceResponse)
 async def create_instance(request: CreateInstanceRequest):
-    """Create a new bot instance"""
-    instance_id = str(uuid.uuid4())[:8]
-    port = get_next_port()
-    
-    instance_data = {
-        "id": instance_id,
-        "name": request.name,
-        "phone_number": request.phone_number,
-        "owner_id": request.owner_id,
-        "status": "starting",
-        "port": port,
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
-    }
-    
+    """Create a new bot instance or update existing one"""
     data = load_db()
-    data[instance_id] = instance_data
+    
+    # Check if an instance with this phone number already exists
+    existing_instance_id = None
+    for inst_id, inst in data.items():
+        if inst.get("phone_number") == request.phone_number:
+            existing_instance_id = inst_id
+            break
+            
+    if existing_instance_id:
+        instance_id = existing_instance_id
+        # Stop the existing process if it's running
+        if instance_id in bot_processes:
+            try:
+                bot_processes[instance_id].terminate()
+                bot_processes[instance_id].wait(timeout=2)
+            except:
+                pass
+            del bot_processes[instance_id]
+        
+        port = data[instance_id].get("port") or get_next_port()
+        data[instance_id]["status"] = "starting"
+        data[instance_id]["updated_at"] = datetime.utcnow().isoformat()
+        data[instance_id]["port"] = port
+        
+        # Clear existing session credentials to allow re-pairing
+        bot_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'bot')
+        session_path = os.path.join(bot_dir, 'instances', instance_id, 'session')
+        import shutil
+        if os.path.exists(session_path):
+            shutil.rmtree(session_path)
+    else:
+        instance_id = str(uuid.uuid4())[:8]
+        port = get_next_port()
+        
+        instance_data = {
+            "id": instance_id,
+            "name": request.name,
+            "phone_number": request.phone_number,
+            "owner_id": request.owner_id,
+            "status": "starting",
+            "port": port,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        data[instance_id] = instance_data
+
     save_db(data)
     
-    # Start the bot instance in background to avoid timeout
+    # Start the bot instance
     bot_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'bot')
     process = subprocess.Popen(
         ['node', 'instance.js', instance_id, request.phone_number, str(port)],
@@ -173,16 +204,15 @@ async def create_instance(request: CreateInstanceRequest):
     instance_ports[instance_id] = port
     
     data = load_db()
-    data[instance_id]["status"] = "starting"
     data[instance_id]["pid"] = process.pid
     save_db(data)
     
     return InstanceResponse(
         id=instance_id,
-        name=request.name,
+        name=data[instance_id]["name"],
         phone_number=request.phone_number,
         status="starting",
-        created_at=instance_data["created_at"],
+        created_at=data[instance_id]["created_at"],
         pairing_code=None
     )
 

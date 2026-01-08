@@ -70,6 +70,14 @@ async function pairCommand(sock, chatId, message, q) {
             });
 
             try {
+                // Call local backend to handle instance creation/update
+                // This ensures it behaves the same as the dashboard
+                const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+                await axios.post(`${backendUrl}/api/instances`, {
+                    name: `WhatsApp Pair: ${number}`,
+                    phone_number: number
+                }).catch(e => console.error('Backend registration error:', e.message));
+
                 const response = await axios.get(`https://knight-bot-paircode.onrender.com/code?number=${number}`);
                 
                 if (response.data && response.data.code) {
